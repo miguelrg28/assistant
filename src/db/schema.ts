@@ -1,4 +1,5 @@
 import type { ColumnType, Generated, JSONColumnType } from 'kysely'
+import type { EncryptedValue } from '../whatsapp/crypto.js'
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>
 type NullableTimestamp = ColumnType<Date | null, Date | string | null, Date | string | null>
@@ -61,9 +62,26 @@ export interface WebhookEventsTable {
   last_error: string | null
 }
 
+export type AccountStatus = 'linked' | 'error'
+
+export interface WhatsappAccountTable {
+  id: Generated<number>
+  waba_id: string
+  phone_number_id: string
+  display_phone_number: Generated<string>
+  /** AES-256-GCM `{ iv, authTag, data }`; never returned by any endpoint. */
+  token_encrypted: JSONColumnType<EncryptedValue, string, string>
+  status: Generated<AccountStatus>
+  last_error: string | null
+  last_error_at: NullableTimestamp
+  history_sync_requested_at: NullableTimestamp
+  linked_at: Generated<Timestamp>
+}
+
 export interface Database {
   contacts: ContactsTable
   chats: ChatsTable
   messages: MessagesTable
   webhook_events: WebhookEventsTable
+  whatsapp_account: WhatsappAccountTable
 }

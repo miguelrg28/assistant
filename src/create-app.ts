@@ -7,10 +7,11 @@ import { sql } from 'kysely'
 import { AUTH_BASE_PATH, CONSENT_PATH, LOGIN_PATH, mcpResourceUrl, type Auth } from './auth/auth.js'
 import { consentPage, loginPage } from './auth/pages.js'
 import type { DB } from './db/client.js'
-import type { Env } from './env.js'
+import { readMetaSignupConfig, type Env, type MetaSignupConfig } from './env.js'
 import { drainPendingEvents } from './ingest/processor.js'
 import { createMcpServer } from './mcp/server.js'
 import { webhookRoutes } from './routes/webhook.js'
+import { whatsappAccountRoutes } from './routes/whatsapp-account.js'
 import { privacyPage } from './privacy.js'
 import { safeEqual } from './whatsapp/signature.js'
 
@@ -20,12 +21,20 @@ export interface AppDeps {
   env: Env
   /** Runs work after the response is sent (Vercel `waitUntil`). Tests await it directly. */
   background: (task: Promise<unknown>) => void
+  /** Embedded Signup settings for /whatsapp; read from process.env when omitted. */
+  metaSignup?: MetaSignupConfig
 }
 
 export function createApp(deps: AppDeps) {
   const { db, auth, env } = deps
   const app = new Hono()
 
+  // Registered before secureHeaders so it runs last: FB.login's popup needs `window.opener`, which
+  // the default `Cross-Origin-Opener-Policy: same-origin` severs.
+  app.use('/whatsapp', async (c, next) => {
+    await next()
+    c.res.headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+  })
   app.use(secureHeaders())
 
   app.get('/', (c) => c.text('ok'))
@@ -98,6 +107,8 @@ export function createApp(deps: AppDeps) {
 
   // --- WhatsApp ingestion --------------------------------------------------
   app.route('/webhooks/whatsapp', webhookRoutes(deps))
+  // Linking the number (Meta Embedded Signup), for the signed-in owner.
+  app.route('/whatsapp', whatsappAccountRoutes(deps, deps.metaSignup ?? readMetaSignupConfig()))
 
   // Vercel cron: retry anything the post-response processing didn't finish.
   app.get('/cron/drain', async (c) => {

@@ -13,17 +13,19 @@ const style = raw(`<style>
 </style>`)
 
 // Posts the signed OAuth query the provider put on this page's URL, then follows the redirect it returns.
+// Outside the OAuth flow (/login?next=/whatsapp) it signs in and goes back to that same-origin path.
 const flowScript = raw(`<script>
   async function post(path, body) {
-    const oauthQuery = location.search.slice(1);
+    const back = new URLSearchParams(location.search).get('next');
+    const local = back && /^\\/(?![\\/\\\\])/.test(back) ? back : null;
     const res = await fetch('${AUTH_BASE_PATH}' + path, {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ ...body, oauth_query: oauthQuery }),
+      body: JSON.stringify(local ? body : { ...body, oauth_query: location.search.slice(1) }),
     });
     const data = await res.json().catch(() => ({}));
-    const next = data.url || data.redirect_uri;
+    const next = local || data.url || data.redirect_uri;
     if (res.ok && next) { location.href = next; return; }
     document.getElementById('error').textContent = data.message || data.error_description || 'Something went wrong';
   }

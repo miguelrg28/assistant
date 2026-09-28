@@ -1,27 +1,36 @@
-// One-time, right after Coexistence onboarding: asks Meta to start the contacts and history sync.
-// Read-only as far as WhatsApp goes: it sends no messages. Run it yourself; never from the server.
+// Asks Meta to start the contacts and history sync. Linking from /whatsapp already does this; use the
+// script only to retry by hand. Read-only as far as WhatsApp goes: it sends no messages.
 //
-//   META_ACCESS_TOKEN=… META_PHONE_NUMBER_ID=… npm run whatsapp:sync
+//   npm run whatsapp:sync                                         # number linked from /whatsapp
+//   META_ACCESS_TOKEN=… META_PHONE_NUMBER_ID=… npm run whatsapp:sync  # or explicit credentials
 //
 // Meta then delivers smb_app_state_sync and history webhooks to /webhooks/whatsapp.
 import './load-env.js'
+import { createDb } from '../src/db/client.js'
+import { readEnv, readMetaSignupConfig } from '../src/env.js'
+import { linkedCredentials, requestSync } from '../src/whatsapp/embedded-signup.js'
 
-const token = process.env.META_ACCESS_TOKEN
-const phoneNumberId = process.env.META_PHONE_NUMBER_ID
-const version = process.env.META_GRAPH_VERSION ?? 'v23.0'
+const config = readMetaSignupConfig()
 
-if (!token || !phoneNumberId) {
-  console.error('Set META_ACCESS_TOKEN and META_PHONE_NUMBER_ID for this command.')
+async function credentials() {
+  const token = process.env.META_ACCESS_TOKEN
+  const phoneNumberId = process.env.META_PHONE_NUMBER_ID
+  if (token && phoneNumberId) return { token, phoneNumberId }
+  const db = createDb(readEnv(process.env, ['DATABASE_URL']).DATABASE_URL)
+  try {
+    return await linkedCredentials(db, config)
+  } finally {
+    await db.destroy()
+  }
+}
+
+const creds = await credentials()
+if (!creds) {
+  console.error('No linked number (or WHATSAPP_TOKEN_KEY missing). Link it at /whatsapp, or set META_ACCESS_TOKEN and META_PHONE_NUMBER_ID.')
   process.exit(1)
 }
 
-for (const syncType of ['smb_app_state_sync', 'history'] as const) {
-  const res = await fetch(`https://graph.facebook.com/${version}/${phoneNumberId}/smb_app_data`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ messaging_product: 'whatsapp', sync_type: syncType }),
-  })
-  const body = await res.text()
-  console.log(`${syncType}: HTTP ${res.status} ${body}`)
-  if (!res.ok) process.exitCode = 1
+for (const result of await requestSync(config, creds.phoneNumberId, creds.token)) {
+  console.log(`${result.syncType}: HTTP ${result.status} ${result.body}`)
+  if (!result.ok) process.exitCode = 1
 }

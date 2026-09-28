@@ -52,3 +52,26 @@ export function readEnv(
   }
   return env
 }
+
+/**
+ * Optional settings for linking the number from /whatsapp (Meta Embedded Signup). The rest of the
+ * service works without them; the page just says linking isn't configured.
+ */
+export interface MetaSignupConfig {
+  /** Meta app → App settings → Basic → App ID. */
+  appId?: string
+  /** WhatsApp → Embedded Signup → Configuration ID. */
+  configId?: string
+  graphVersion: string
+  /** 32 bytes (base64 or 64 hex chars) used to encrypt the access token at rest. */
+  tokenKey?: string
+}
+
+export function readMetaSignupConfig(source: Record<string, string | undefined> = process.env): MetaSignupConfig {
+  return {
+    appId: source.META_APP_ID?.trim() || undefined,
+    configId: source.META_CONFIG_ID?.trim() || undefined,
+    graphVersion: source.META_GRAPH_VERSION?.trim() || 'v23.0',
+    tokenKey: source.WHATSAPP_TOKEN_KEY?.trim() || undefined,
+  }
+}

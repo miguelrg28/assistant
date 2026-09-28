@@ -4,7 +4,7 @@ This service stores **your** WhatsApp Business 1:1 chats and lets claude.ai read
 
 It connects to the Meta Cloud API directly, using **Coexistence**. Your phone app keeps working, and up to 6 months of 1:1 history is synced once. Group chats are not delivered by Coexistence, so they're out of scope.
 
-**It is read-only.** No endpoint or tool sends WhatsApp messages. The only call to Meta is `npm run whatsapp:sync`, which you run by hand once to request the history and contacts sync.
+**It is read-only.** No endpoint or tool sends WhatsApp messages. The only calls to Meta are the ones that link your number at `/whatsapp` (Embedded Signup) and request the one-time history and contacts sync.
 
 ```
 Meta webhooks ──▶ POST /webhooks/whatsapp ──▶ webhook_events (raw, signed) ──▶ processor ──▶ contacts / chats / messages
@@ -57,12 +57,21 @@ Results are compact JSON and never include the raw webhook payload.
 | `META_VERIFY_TOKEN` | Any random string. Enter the same value in Meta's webhook settings. |
 | `CRON_SECRET` | `openssl rand -hex 32`. Vercel sends it to `/cron/drain`. |
 
+To link the number from `/whatsapp` (optional; without them the page says linking isn't configured):
+
+| Variable | Purpose |
+|---|---|
+| `META_APP_ID` | Meta app → App settings → Basic → App ID |
+| `META_CONFIG_ID` | WhatsApp → Embedded Signup → Configurations → Configuration ID |
+| `WHATSAPP_TOKEN_KEY` | `openssl rand -base64 32`. Encrypts the linked access token (AES-256-GCM) in the database. Changing it means linking again. |
+| `META_GRAPH_VERSION` | Graph API version, default `v23.0` |
+
 The scripts need these only when you run them, not in Vercel:
 
 | Variable | Used by |
 |---|---|
 | `OWNER_PASSWORD` | `npm run owner:create` (at least 12 characters) |
-| `META_ACCESS_TOKEN`, `META_PHONE_NUMBER_ID`, `META_GRAPH_VERSION` (default `v23.0`) | `npm run whatsapp:sync` |
+| `META_ACCESS_TOKEN`, `META_PHONE_NUMBER_ID` | `npm run whatsapp:sync`, only to override the number linked at `/whatsapp` |
 
 For local scripts, put values in `.env.local` (what `vercel env pull` writes) or `.env`. Both are git-ignored and loaded automatically. `db:migrate` and `owner:create` only need `DATABASE_URL`, `BASE_URL`, `BETTER_AUTH_SECRET` and `OWNER_EMAIL`.
 
@@ -103,16 +112,16 @@ Use a **dedicated Meta app** for this. Don't reuse Emporio's, because a Meta app
 These all happen in your Meta and WhatsApp accounts. This repo doesn't touch them.
 
 1. **Verify your business** in Meta Business Manager (Security Center → Business verification). You need legal documents, and it can take days.
-2. **Create a Meta app** (type Business) and add the **WhatsApp** product.
-3. **Onboard your number through Coexistence.** This only works through Meta's **Embedded Signup** flow, using the option to connect an existing WhatsApp Business App number. When you do it:
-   - The WhatsApp Business app shows a QR code or prompt on your phone. Approve it.
+2. **Create a Meta app** (type Business), add the **WhatsApp** product and **Facebook Login for Business**.
+3. **Create an Embedded Signup configuration** (WhatsApp → Embedded Signup, or Facebook Login for Business → Configurations) that allows onboarding an existing WhatsApp Business app number. Its ID is `META_CONFIG_ID`. Under Facebook Login → Settings, add your `BASE_URL` domain to **Allowed domains for the JavaScript SDK** and turn on **Login with the JavaScript SDK**. Set `META_APP_ID`, `META_CONFIG_ID` and `WHATSAPP_TOKEN_KEY` in Vercel and redeploy.
+4. **Link your number.** Open `https://<app>/whatsapp`, sign in with `OWNER_EMAIL`, and click **Conectar con Meta**. In Meta's popup:
+   - Choose to connect your existing WhatsApp Business app number. The app shows a QR code or prompt on your phone. Approve it.
    - When asked, turn on **Share chats / chat history**. If you skip this, `history` sends an error and no backfill happens. The service records that and does nothing else.
    - Meta requires opening the WhatsApp Business app at least every ~14 days to keep Coexistence active.
-4. **Request the sync right away.** Meta only accepts it for a limited time after onboarding:
-   ```bash
-   META_ACCESS_TOKEN=… META_PHONE_NUMBER_ID=… npm run whatsapp:sync
-   ```
-   Contacts and history then arrive as webhooks, in chunks. A large archive can take a while to finish.
+
+   The server then trades the popup's code for an access token, subscribes the app to your WABA with `https://<app>/webhooks/whatsapp` as the callback, stores the token encrypted and **requests the contacts and history sync right away** (Meta only accepts it for a limited time after onboarding). The page shows the linked number and when the sync was requested; **Reintentar sincronización** or `npm run whatsapp:sync` retries it. Contacts and history then arrive as webhooks, in chunks. A large archive can take a while to finish.
+
+   **Desvincular** only forgets the number and token locally; it doesn't unsubscribe the WABA or revoke the token at Meta (do that in Meta Business Suite). The archived messages stay.
 5. **Add the connector in claude.ai** (next section).
 
 > **Check before you onboard.** Meta's rules for self-serve Embedded Signup (whether you need Tech Provider status or app review for `whatsapp_business_management` / `whatsapp_business_messaging`) and the exact deadline for requesting the sync change often. Confirm both in Meta's current Coexistence docs first. The code doesn't depend on either answer.
@@ -161,11 +170,12 @@ curl -X POST localhost:3000/webhooks/whatsapp -H "x-hub-signature-256: $SIG" -H 
 ```
 src/
   index.ts              Vercel entry (default-exported Hono app)
-  create-app.ts         Routes: OAuth, /mcp, webhook, cron
+  create-app.ts         Routes: OAuth, /mcp, /whatsapp, webhook, cron
   env.ts                Env validation
   auth/                 Better Auth config, login/consent pages, owner provisioning
   db/                   Kysely client, schema types, migrations
-  whatsapp/             Signature check, payload → internal events
+  whatsapp/             Signature check, payload → internal events, Embedded Signup, token encryption
+  routes/               Webhook and /whatsapp (link the number) routes
   ingest/processor.ts   Idempotent apply + retry drain
   mcp/                  MCP server, tools, SQL
 scripts/                migrate, owner:create, whatsapp:sync, dev

@@ -78,10 +78,26 @@ export interface WhatsappAccountTable {
   linked_at: Generated<Timestamp>
 }
 
+export interface ExcludedContactsTable {
+  wa_id: string
+  label: Generated<string>
+  created_at: Generated<Timestamp>
+}
+
+export type RetentionMonths = 3 | 6 | 9 | 12
+
+export interface DataSettingsTable {
+  id: Generated<boolean>
+  retention_months: Generated<RetentionMonths>
+  last_purge_at: NullableTimestamp
+}
+
 export interface Database {
   contacts: ContactsTable
   chats: ChatsTable
   messages: MessagesTable
   webhook_events: WebhookEventsTable
   whatsapp_account: WhatsappAccountTable
+  excluded_contacts: ExcludedContactsTable
+  data_settings: DataSettingsTable
 }

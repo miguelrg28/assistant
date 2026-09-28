@@ -55,7 +55,7 @@ Results are compact JSON and never include the raw webhook payload.
 | `OWNER_EMAIL` | The only account that can sign in |
 | `META_APP_SECRET` | Meta app → App settings → Basic → App secret |
 | `META_VERIFY_TOKEN` | Any random string. Enter the same value in Meta's webhook settings. |
-| `CRON_SECRET` | `openssl rand -hex 32`. Vercel sends it to `/cron/drain`. |
+| `CRON_SECRET` | `openssl rand -hex 32`. Vercel sends it to `/cron/drain` and `/cron/purge`. |
 
 To link the number from `/whatsapp` (optional; without them the page says linking isn't configured):
 
@@ -91,7 +91,9 @@ For local scripts, put values in `.env.local` (what `vercel env pull` writes) or
    - `curl https://<app>/` returns `ok`.
    - `curl -i -X POST https://<app>/mcp` returns `401` with a `WWW-Authenticate` header.
 
-A Vercel cron (`vercel.json`) calls `/cron/drain` every 5 minutes. It retries any webhook event whose processing didn't finish after the response was sent.
+Two Vercel crons are defined in `vercel.json`:
+- `/cron/drain`, every 5 minutes, retries any webhook event whose processing didn't finish after the response was sent.
+- `/cron/purge`, daily, applies the retention settings (see [Privacy controls](#privacy-controls)).
 
 ## Register the webhook with Meta
 
@@ -125,6 +127,14 @@ These all happen in your Meta and WhatsApp accounts. This repo doesn't touch the
 5. **Add the connector in claude.ai** (next section).
 
 > **Check before you onboard.** Meta's rules for self-serve Embedded Signup (whether you need Tech Provider status or app review for `whatsapp_business_management` / `whatsapp_business_messaging`) and the exact deadline for requesting the sync change often. Confirm both in Meta's current Coexistence docs first. The code doesn't depend on either answer.
+
+## Privacy controls
+
+The **Privacidad** section of `https://<app>/whatsapp` decides what the archive keeps. Anything not stored can't reach the AI.
+
+- **Retention.** A slider sets how long messages are kept: 3, 6, 9 or 12 months (12 by default). Messages older than that are deleted daily by `/cron/purge`, and right away when you lower the setting. Late arrivals older than the window, like part of the history backfill, are never stored. Chats left with no messages are removed. Lowering the value asks for confirmation, because deleted messages can't be recovered.
+- **Excluded chats.** Search a contact (or type a number) and exclude it. Its contact, chat and messages are deleted, and new messages and address-book entries for that number are dropped when they arrive. Removing the exclusion only stores messages from then on.
+- **Raw payloads.** `webhook_events` holds full message bodies, so processed events are deleted after 7 days, whatever the retention setting.
 
 ## Add it to claude.ai as a custom connector
 

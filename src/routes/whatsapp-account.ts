@@ -1,6 +1,17 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import type { AppDeps } from '../create-app.js'
+import {
+  excludeContact,
+  getRetentionMonths,
+  includeContact,
+  listExcluded,
+  purgeExpired,
+  RETENTION_OPTIONS,
+  retentionCutoff,
+  setRetentionMonths,
+} from '../data-controls.js'
+import { findContacts } from '../mcp/queries.js'
 import type { MetaSignupConfig } from '../env.js'
 import {
   accountStatus,
@@ -19,7 +30,13 @@ const LinkBody = z.object({
   event: z.string().max(64).default('FINISH'),
 })
 
-/** `/whatsapp`: link the owner's number through Meta Embedded Signup. Owner session (cookie) only. */
+const WaIdBody = z.object({ waId: z.string().regex(/^\d{6,20}$/) })
+const RetentionBody = z.object({ months: z.union(RETENTION_OPTIONS.map((m) => z.literal(m))) })
+
+/**
+ * `/whatsapp`: link the owner's number through Meta Embedded Signup, and choose what the archive keeps
+ * (excluded chats, retention). Owner session (cookie) only.
+ */
 export function whatsappAccountRoutes({ db, auth, env, background }: AppDeps, config: MetaSignupConfig) {
   const routes = new Hono()
 
@@ -73,6 +90,53 @@ export function whatsappAccountRoutes({ db, auth, env, background }: AppDeps, co
 
   routes.post('/api/unlink', async (c) => {
     await unlinkAccount(db)
+    return c.json({ ok: true })
+  })
+
+  // --- Privacy: excluded chats and retention ---------------------------------
+
+  routes.get('/api/privacy', async (c) => {
+    const months = await getRetentionMonths(db)
+    const settings = await db.selectFrom('data_settings').select('last_purge_at').executeTakeFirst()
+    return c.json({
+      retentionMonths: months,
+      options: RETENTION_OPTIONS,
+      cutoff: retentionCutoff(months),
+      lastPurgeAt: settings?.last_purge_at ?? null,
+      excluded: await listExcluded(db),
+    })
+  })
+
+  routes.post('/api/privacy/retention', async (c) => {
+    const parsed = RetentionBody.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) return c.json({ message: 'Elige 3, 6, 9 o 12 meses' }, 400)
+    await setRetentionMonths(db, parsed.data.months)
+    // Apply it right away instead of waiting for the daily cron.
+    const result = await purgeExpired(db)
+    return c.json({ ok: true, retentionMonths: parsed.data.months, cutoff: result.cutoff, deletedMessages: result.deletedMessages })
+  })
+
+  routes.get('/api/privacy/contacts', async (c) => {
+    const q = (c.req.query('q') ?? '').trim()
+    if (q.length < 2) return c.json({ contacts: [] })
+    const matches = await findContacts(db, q.slice(0, 100), 8)
+    return c.json({ contacts: matches.map((m) => ({ waId: m.wa_id, name: m.name, lastMessageAt: m.last_message_at })) })
+  })
+
+  routes.post('/api/privacy/exclude', async (c) => {
+    const parsed = WaIdBody.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) return c.json({ message: 'Número inválido' }, 400)
+    const { waId } = parsed.data
+    const contact = await db.selectFrom('contacts').select(['saved_name', 'profile_name']).where('wa_id', '=', waId).executeTakeFirst()
+    const label = contact?.saved_name ?? contact?.profile_name ?? ''
+    const { deletedMessages } = await excludeContact(db, waId, label)
+    return c.json({ ok: true, deletedMessages })
+  })
+
+  routes.post('/api/privacy/include', async (c) => {
+    const parsed = WaIdBody.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) return c.json({ message: 'Número inválido' }, 400)
+    await includeContact(db, parsed.data.waId)
     return c.json({ ok: true })
   })
 

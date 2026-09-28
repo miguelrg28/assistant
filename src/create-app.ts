@@ -8,6 +8,7 @@ import { AUTH_BASE_PATH, CONSENT_PATH, LOGIN_PATH, mcpResourceUrl, type Auth } f
 import { consentPage, loginPage } from './auth/pages.js'
 import type { DB } from './db/client.js'
 import { readMetaSignupConfig, type Env, type MetaSignupConfig } from './env.js'
+import { purgeExpired } from './data-controls.js'
 import { drainPendingEvents } from './ingest/processor.js'
 import { createMcpServer } from './mcp/server.js'
 import { webhookRoutes } from './routes/webhook.js'
@@ -38,7 +39,7 @@ export function createApp(deps: AppDeps) {
   app.use(secureHeaders())
 
   app.get('/', (c) => c.text('ok'))
-  app.get('/privacy', (c) => c.html(privacyPage('2026-09-26')))
+  app.get('/privacy', (c) => c.html(privacyPage('2026-09-28')))
 
   // --- OAuth (Better Auth) -------------------------------------------------
   // This server protects exactly one resource, so a client that omits RFC 8707 `resource`
@@ -111,12 +112,17 @@ export function createApp(deps: AppDeps) {
   app.route('/whatsapp', whatsappAccountRoutes(deps, deps.metaSignup ?? readMetaSignupConfig()))
 
   // Vercel cron: retry anything the post-response processing didn't finish.
+  const isCron = (header: string | undefined) => safeEqual(header ?? '', `Bearer ${env.CRON_SECRET}`)
   app.get('/cron/drain', async (c) => {
-    if (!safeEqual(c.req.header('authorization') ?? '', `Bearer ${env.CRON_SECRET}`)) {
-      return c.json({ error: 'unauthorized' }, 401)
-    }
+    if (!isCron(c.req.header('authorization'))) return c.json({ error: 'unauthorized' }, 401)
     const result = await drainPendingEvents(db)
     return c.json(result)
+  })
+
+  // Vercel cron, daily: delete messages older than the retention window set at /whatsapp.
+  app.get('/cron/purge', async (c) => {
+    if (!isCron(c.req.header('authorization'))) return c.json({ error: 'unauthorized' }, 401)
+    return c.json(await purgeExpired(db))
   })
 
   return app

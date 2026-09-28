@@ -12,6 +12,13 @@ const style = raw(`<style>
   button:disabled { cursor: default; opacity: .6; }
   #msg { min-height: 1.2em; font-size: .9rem; }
   .muted { opacity: .7; font-size: .9rem; }
+  h2 { font-size: 1.05rem; margin-top: 32px; }
+  input[type=range] { width: 100%; margin: 8px 0 0; }
+  .ticks { display: flex; justify-content: space-between; font-size: .8rem; opacity: .7; }
+  input[type=search] { width: 100%; box-sizing: border-box; padding: 8px; font-size: 1rem; }
+  ul.list { list-style: none; padding: 0; margin: 8px 0 0; }
+  ul.list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid #8883; }
+  ul.list li button { margin: 0; padding: 4px 10px; font-size: .85rem; }
 </style>`)
 
 // Port of villalubri's VincularMeta.tsx: Facebook JS SDK + Embedded Signup (Coexistence).
@@ -99,12 +106,96 @@ const script = raw(`<script>
     try { await api(path, {}); say(done); await load(); } catch (err) { say(err.message, true); } finally { setBusy(false); }
   }
 
+  // --- Privacy: retention slider and excluded chats --------------------------
+  let retention = 12;
+  const day = (d) => new Date(d).toLocaleDateString('es');
+  const cutoffFor = (months) => { const d = new Date(); d.setMonth(d.getMonth() - months); return d; };
+  const showRetention = (months) => {
+    $('ret-value').textContent = months + ' meses';
+    $('ret-note').textContent = 'Se conservan los mensajes desde el ' + day(cutoffFor(months)) + '. Los anteriores se borran cada día.';
+  };
+
+  function li(label, sub, buttonText, onClick) {
+    const item = document.createElement('li');
+    const text = document.createElement('span');
+    text.textContent = label;
+    if (sub) { const small = document.createElement('span'); small.className = 'muted'; small.textContent = ' ' + sub; text.appendChild(small); }
+    const button = document.createElement('button');
+    button.textContent = buttonText;
+    button.onclick = onClick;
+    item.append(text, button);
+    return item;
+  }
+
+  async function loadPrivacy() {
+    const p = await api('privacy');
+    retention = p.retentionMonths;
+    $('retention').value = String(retention);
+    showRetention(retention);
+    $('ret-last').textContent = p.lastPurgeAt ? 'Última limpieza: ' + fmt(p.lastPurgeAt) : '';
+    const list = $('excluded');
+    list.replaceChildren(...p.excluded.map((x) =>
+      li(x.label || '+' + x.waId, x.label ? '+' + x.waId : '', 'Quitar exclusión', () => include(x.waId))));
+    $('excluded-empty').hidden = p.excluded.length > 0;
+  }
+
+  $('retention').oninput = (e) => showRetention(Number(e.target.value));
+  $('retention').onchange = async (e) => {
+    const months = Number(e.target.value);
+    if (months < retention && !confirm('Se borrarán de forma permanente los mensajes anteriores al ' + day(cutoffFor(months)) + '. ¿Continuar?')) {
+      e.target.value = String(retention); showRetention(retention); return;
+    }
+    setBusy(true);
+    try {
+      const r = await api('privacy/retention', { months });
+      say('Retención: ' + months + ' meses' + (r.deletedMessages ? '. Se borraron ' + r.deletedMessages + ' mensajes.' : '.'));
+      await loadPrivacy();
+    } catch (err) { say(err.message, true); e.target.value = String(retention); showRetention(retention); }
+    finally { setBusy(false); }
+  };
+
+  async function exclude(waId, name) {
+    if (!confirm('Se borrarán todos los mensajes de ' + name + ' y no se guardarán los nuevos. La IA no podrá leerlos. ¿Continuar?')) return;
+    setBusy(true);
+    try {
+      const r = await api('privacy/exclude', { waId });
+      say(name + ' excluido. Mensajes borrados: ' + r.deletedMessages + '.');
+      $('search').value = ''; $('results').replaceChildren();
+      await loadPrivacy();
+    } catch (err) { say(err.message, true); } finally { setBusy(false); }
+  }
+
+  async function include(waId) {
+    setBusy(true);
+    try { await api('privacy/include', { waId }); say('Exclusión quitada. Solo se guardarán los mensajes nuevos.'); await loadPrivacy(); }
+    catch (err) { say(err.message, true); } finally { setBusy(false); }
+  }
+
+  let searchTimer;
+  $('search').oninput = (e) => {
+    clearTimeout(searchTimer);
+    const q = e.target.value.trim();
+    searchTimer = setTimeout(async () => {
+      if (q.length < 2) { $('results').replaceChildren(); return; }
+      try {
+        const r = await api('privacy/contacts?q=' + encodeURIComponent(q));
+        const items = r.contacts.map((x) => li(x.name, '+' + x.waId, 'Excluir', () => exclude(x.waId, x.name)));
+        const digits = q.replace(/\\D/g, '');
+        if (digits.length >= 6 && !r.contacts.some((x) => x.waId === digits)) {
+          items.push(li('+' + digits, '(número)', 'Excluir', () => exclude(digits, '+' + digits)));
+        }
+        $('results').replaceChildren(...items);
+      } catch (err) { say(err.message, true); }
+    }, 250);
+  };
+
   $('connect').onclick = connect;
   $('unlink').onclick = () => action('unlink', '¿Desvincular el número? El archivo de mensajes se conserva.', 'Número desvinculado');
   $('resync').onclick = () => action('sync', null, 'Sincronización solicitada');
 
   (async () => {
     try {
+      await loadPrivacy();
       meta = await api('meta');
       await load();
       if (!meta.ready) { $('not-ready').hidden = false; setBusy(false); $('connect').disabled = true; return; }
@@ -158,7 +249,28 @@ export const whatsappPage = () => html`<!doctype html>
       <button id="unlink" disabled>Desvincular</button>
     </div>
     <button id="connect" disabled>Conectar con Meta</button>
-    <p id="msg" role="status"></p>
+    <p id="msg" role="status" aria-live="polite"></p>
+
+    <h2>Privacidad</h2>
+    <div class="card">
+      <label for="retention"><strong>Conservar mensajes:</strong> <span id="ret-value"></span></label>
+      <input id="retention" type="range" min="3" max="12" step="3" value="12" list="ret-ticks" />
+      <datalist id="ret-ticks"><option value="3"></option><option value="6"></option><option value="9"></option><option value="12"></option></datalist>
+      <div class="ticks"><span>3</span><span>6</span><span>9</span><span>12</span></div>
+      <p id="ret-note" class="muted"></p>
+      <p id="ret-last" class="muted"></p>
+    </div>
+    <div class="card">
+      <strong>Chats excluidos</strong>
+      <p class="muted">
+        Sus mensajes se borran, los nuevos no se guardan y la IA nunca puede leerlos. Al quitar la exclusión solo se
+        guardan los mensajes que lleguen después.
+      </p>
+      <input id="search" type="search" placeholder="Buscar contacto o escribir número" autocomplete="off" />
+      <ul id="results" class="list"></ul>
+      <p id="excluded-empty" class="muted">No hay chats excluidos.</p>
+      <ul id="excluded" class="list"></ul>
+    </div>
     ${script}
   </body>
 </html>`

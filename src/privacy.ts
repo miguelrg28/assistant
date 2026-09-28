@@ -46,8 +46,8 @@ export const privacyPage = (updated: string) => html`<!doctype html>
     <h2>How it is used</h2>
     <p>Only so the owner can read and search their own conversations, including through an AI assistant they authorize. This service does not send messages, does not advertise, and does not sell or share your data with third parties.</p>
     <h2>Security and retention</h2>
-    <p>Data is encrypted in transit and stored in a private database accessible only to the authenticated owner. It is kept while the owner keeps the service running.</p>
+    <p>Data is encrypted in transit and stored in a private database accessible only to the authenticated owner. Messages are deleted automatically once they are older than the retention period the owner sets (3 to 12 months; 12 by default). Raw webhook deliveries are deleted a week after they are processed.</p>
     <h2>Your rights and data deletion</h2>
-    <p>To request access, correction or deletion, message the same WhatsApp Business number you chatted with. The owner will delete your contact and all of your messages from this service.</p>
+    <p>To request access, correction or deletion, message the same WhatsApp Business number you chatted with. The owner will delete your contact and all of your messages from this service and exclude your number, so future messages are not stored either.</p>
   </body>
 </html>`

@@ -1,4 +1,5 @@
 import { sql, type Transaction } from 'kysely'
+import { getRetentionMonths, isExcluded, retentionCutoff } from '../data-controls.js'
 import type { DB } from '../db/client.js'
 import type { Database } from '../db/schema.js'
 import { normalizeWebhook, type ContactEvent, type MessageEvent, type StatusEvent } from '../whatsapp/normalize.js'
@@ -25,8 +26,9 @@ export async function processEvent(db: DB, eventId: number): Promise<'processed'
         .executeTakeFirst()
       if (!event) return 'skipped'
 
+      const cutoff = retentionCutoff(await getRetentionMonths(tx))
       for (const item of normalizeWebhook(event.payload)) {
-        if (item.kind === 'message') await applyMessage(tx, item)
+        if (item.kind === 'message') await applyMessage(tx, item, cutoff)
         else if (item.kind === 'status') await applyStatus(tx, item)
         else await applyContact(tx, item)
       }
@@ -101,7 +103,9 @@ async function upsertChat(tx: Tx, contactId: number): Promise<number> {
   return chat.id
 }
 
-async function applyMessage(tx: Tx, event: MessageEvent): Promise<void> {
+async function applyMessage(tx: Tx, event: MessageEvent, cutoff: Date): Promise<void> {
+  // Excluded contacts are never stored, and history older than the retention window is dropped.
+  if (event.sentAt < cutoff || (await isExcluded(tx, event.contactWaId))) return
   const contactId = await upsertContact(tx, event.contactWaId, event.contactProfileName)
   const chatId = await upsertChat(tx, contactId)
 
@@ -154,6 +158,7 @@ async function applyStatus(tx: Tx, event: StatusEvent): Promise<void> {
 }
 
 async function applyContact(tx: Tx, event: ContactEvent): Promise<void> {
+  if (await isExcluded(tx, event.waId)) return
   if (event.action === 'remove') {
     // Keep the conversation; just forget the address-book name.
     await tx.updateTable('contacts').set({ saved_name: null, updated_at: sql`now()` }).where('wa_id', '=', event.waId).execute()
